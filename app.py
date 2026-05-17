@@ -2,12 +2,14 @@ from flask import Flask, render_template, jsonify, request
 import cv2
 import numpy as np
 import math
+import time
 import base64
 from cvzone.HandTrackingModule import HandDetector
 from cvzone.ClassificationModule import Classifier
 
 app = Flask(__name__)
 
+# Initialize detector and classifier
 detector = HandDetector(maxHands=1)
 
 classifier = Classifier(
@@ -16,17 +18,22 @@ classifier = Classifier(
 )
 
 labels = [
-    "A", "B", "C", "D", "E", "F", "G",
-    "H", "I", "J", "K", "L", "M", "N",
-    "O", "P", "Q", "R", "S", "T",
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
+    "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T",
     "U", "V", "W", "X", "Y", "Z"
 ]
 
+# Image preprocessing constants
 offset = 20
 imgSize = 300
 
-word = ""
+# State variables
 current_letter = ""
+confidence = 0.0
+word = ""
+last_letter = ""
+letter_start_time = None
+auto_add_delay = 5
 
 
 @app.route('/')
@@ -37,7 +44,11 @@ def index():
 @app.route('/predict', methods=['POST'])
 def predict():
 
+    global word
     global current_letter
+    global confidence
+    global last_letter
+    global letter_start_time
 
     try:
 
@@ -50,7 +61,12 @@ def predict():
             np.uint8
         )
 
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        img = cv2.imdecode(
+            nparr,
+            cv2.IMREAD_COLOR
+        )
+
+        imgOutput = img.copy()
 
         hands, img = detector.findHands(img)
 
@@ -65,10 +81,19 @@ def predict():
                 np.uint8
             ) * 255
 
-            imgCrop = img[
-                y-offset:y+h+offset,
-                x-offset:x+w+offset
-            ]
+            x1 = max(0, x - offset)
+            y1 = max(0, y - offset)
+
+            x2 = min(img.shape[1], x + w + offset)
+            y2 = min(img.shape[0], y + h + offset)
+
+            imgCrop = img[y1:y2, x1:x2]
+
+            if imgCrop.size == 0:
+
+                return jsonify({
+                    "success": False
+                })
 
             aspectRatio = h / w
 
@@ -87,7 +112,7 @@ def predict():
                     (imgSize - wCal) / 2
                 )
 
-                imgWhite[:, wGap:wCal+wGap] = imgResize
+                imgWhite[:, wGap:wCal + wGap] = imgResize
 
             else:
 
@@ -104,7 +129,7 @@ def predict():
                     (imgSize - hCal) / 2
                 )
 
-                imgWhite[hGap:hCal+hGap, :] = imgResize
+                imgWhite[hGap:hCal + hGap, :] = imgResize
 
             prediction, index = classifier.getPrediction(
                 imgWhite,
@@ -113,17 +138,43 @@ def predict():
 
             current_letter = labels[index]
 
+            confidence = prediction[index]
+
+            # Auto add letter logic
+            if current_letter == last_letter:
+
+                if (
+                    letter_start_time and
+                    time.time() - letter_start_time >= auto_add_delay
+                ):
+
+                    word += current_letter
+
+                    letter_start_time = None
+                    last_letter = ""
+
+            else:
+
+                last_letter = current_letter
+                letter_start_time = time.time()
+
             return jsonify({
                 "success": True,
                 "letter": current_letter,
-                "confidence": float(prediction[index])
+                "confidence": float(confidence),
+                "word": word
             })
 
-        return jsonify({
-            "success": False,
-            "letter": "",
-            "confidence": 0
-        })
+        else:
+
+            current_letter = ""
+            confidence = 0.0
+            last_letter = ""
+            letter_start_time = None
+
+            return jsonify({
+                "success": False
+            })
 
     except Exception as e:
 
@@ -136,14 +187,13 @@ def predict():
 @app.route('/add_letter', methods=['POST'])
 def add_letter():
 
-    global word, current_letter
+    global word
+    global current_letter
 
     if current_letter:
         word += current_letter
 
-    return jsonify({
-        "word": word
-    })
+    return "OK"
 
 
 @app.route('/undo_letter', methods=['POST'])
@@ -154,9 +204,7 @@ def undo_letter():
     if len(word) > 0:
         word = word[:-1]
 
-    return jsonify({
-        "word": word
-    })
+    return "OK"
 
 
 @app.route('/reset', methods=['POST'])
@@ -166,9 +214,7 @@ def reset():
 
     word = ""
 
-    return jsonify({
-        "word": word
-    })
+    return "OK"
 
 
 @app.route('/get_word')
